@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "macros",
+    "bindgen", "runtime",
+]
+
+
+resolver =  "2"
