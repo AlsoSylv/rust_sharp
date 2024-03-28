@@ -28,11 +28,11 @@ pub(crate) fn dotnet_internal(item: ItemMod) -> TokenStream {
     let mut functions = Vec::new();
     for item in &content {
         match item {
-            Item::Struct(s) => {}
+            Item::Struct(_s) => {}
             Item::ForeignMod(f) => {
                 f.items.iter().for_each(|item| match item {
                     ForeignItem::Fn(f) => create_c_func_from_extern_rust_func(f, &mut functions),
-                    ForeignItem::Type(ty) => {}
+                    ForeignItem::Type(_ty) => {}
                     _ => {}
                 });
             }

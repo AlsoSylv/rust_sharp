@@ -93,7 +93,6 @@ fn handle_type(elm: &Item, name_space: &mut NameSpace) {
         Item::Struct(ItemStruct {
             attrs,
             fields,
-            vis,
             ident,
             ..
         }) => {
@@ -130,17 +129,13 @@ fn handle_type(elm: &Item, name_space: &mut NameSpace) {
             name_space.add_struct(_struct);
         }
         Item::Enum(ItemEnum {
-            attrs,
-            variants,
-            vis,
-            ident,
             ..
         }) => {}
         _ => {}
     }
 }
 
-pub fn handle_fn(elm: &Item, class: &mut Class, name_space: &mut NameSpace) {
+pub fn handle_fn(elm: &Item, class: &mut Class, _name_space: &mut NameSpace) {
     match elm {
         Item::Fn(ItemFn { attrs, sig, .. }) => {
             if !attrs.is_empty() {

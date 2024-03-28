@@ -19,8 +19,8 @@ impl RustString {
         unsafe { transmute(string) }
     }
 
-    pub fn to_string(r_string: RustString) -> String {
-        unsafe { transmute(r_string) }
+    pub fn to_string(self) -> String {
+        unsafe { transmute(self) }
     }
 
     pub fn as_string_ref(&self) -> &String {
