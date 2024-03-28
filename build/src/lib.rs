@@ -2,8 +2,7 @@ pub mod cs_tokens;
 
 use cs_tokens::{Attr, Class, Method, NameSpace, VariableBuilder};
 use syn::{
-    Attribute, FnArg, Item, ItemEnum, ItemFn, ItemStruct, Meta, Pat, ReturnType,
-    Signature, Type,
+    Attribute, FnArg, Item, ItemEnum, ItemFn, ItemStruct, Meta, Pat, ReturnType, Signature, Type,
 };
 
 use crate::cs_tokens::ScopeBuilder;

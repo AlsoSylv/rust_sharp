@@ -1,8 +1,17 @@
+[package]
+name = "rust_sharp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+macros = { path = "macros" }
+
+[lib]
+
 [workspace]
 members = [
     "macros",
-    "bindgen", "runtime",
+    "build",
 ]
-
 
 resolver =  "2"

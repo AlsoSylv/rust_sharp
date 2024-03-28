@@ -1,132 +1,127 @@
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::{Ident, Span, TokenStream};
 use quote::{quote, ToTokens};
 use std::str::FromStr;
 use syn::punctuated::Punctuated;
-use syn::token::{Colon, Comma, Mut, Star};
+use syn::token::{Brace, Bracket, Comma, Extern, Let, Mut, Paren, PathSep, Pound, Semi, Star, Unsafe};
 use syn::{
-    parse_macro_input, Expr, FnArg, Ident, Item, ItemFn, ItemStruct, Local, LocalInit, Pat,
-    PatIdent, PatType, ReturnType, Stmt, Type, TypePtr,
+    Abi, AttrStyle, Attribute, Block, Expr, ExprCall, ExprPath, FnArg,
+    ForeignItem, ForeignItemFn, Item, ItemFn, ItemMod, LitStr, Local, LocalInit, Meta, Pat,
+    PatIdent, Path, PathArguments, PathSegment, Stmt, Type, TypePtr,
+    Visibility,
 };
-
-#[proc_macro_attribute]
-pub fn dotnetstruct(
-    _: proc_macro::TokenStream,
-    item: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    let struc = parse_macro_input!(item as ItemStruct);
-    let fields = &struc.fields;
-
-    quote!(#struc).into()
-}
-
-#[proc_macro_attribute]
-pub fn dotnetfunction(
-    _: proc_macro::TokenStream,
-    item: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    let fun = parse_macro_input!(item as ItemFn);
-    let inputs = &fun.sig.inputs;
-    let mut strings = vec![];
-    let mut new_inputs: Punctuated<FnArg, Comma> = Punctuated::new();
-    inputs.iter().for_each(|fn_arg| match fn_arg {
-        FnArg::Receiver(_) => unreachable!(),
-        FnArg::Typed(t) => {
-            if let Some(line) = handle_input_types(t, &mut new_inputs) {
-                strings.push(line);
-            } else {
-                new_inputs.push(fn_arg.clone())
-            }
-        }
-    });
-
-    let name = &fun.sig.ident;
-    let output = &fun.sig.output;
-    let block = &fun.block;
-    let vis = &fun.vis;
-    let attrs = &fun.attrs;
-    let safety = &fun.sig.unsafety;
-
-    let expanded = quote! {
-        #[no_mangle]
-        #[allow(improper_ctypes)]
-        #[allow(improper_ctypes_definitions)]
-        #(#attrs)*
-        #vis #safety extern "C" fn #name(#new_inputs) #output {
-            #(#strings)*
-            #block
-        }
-    };
-
-    proc_macro::TokenStream::from(expanded)
-}
 
 #[proc_macro_attribute]
 pub fn dotnet(
     _args: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let opaque = _args.to_string() == "opaque";
-    let item = syn::parse_macro_input!(item as Item);
-    match item {
-        Item::Enum(_en) => {
-            todo!()
-        }
-        Item::Struct(_struc) => {
-            todo!()
-        }
-        Item::Fn(func) => {
-            let sig = &func.sig;
-            let mut new_args: Punctuated<FnArg, Comma> = Punctuated::new();
-            let args = arguments(&sig.inputs, &mut new_args);
-            let rust_func = &sig.ident;
-            let raw_c_func = quote::format_ident!("raw_{}", rust_func);
-            let output_binding = match &sig.output {
-                ReturnType::Type(_, ty) => {
-                    new_args.push(FnArg::Typed(PatType {
-                        attrs: vec![],
-                        colon_token: Colon(Span::call_site()),
-                        pat: Box::new(Pat::Ident(PatIdent {
-                            attrs: vec![],
-                            ident: Ident::new("_return", Span::call_site()),
-                            subpat: None,
-                            by_ref: None,
-                            mutability: None,
-                        })),
-                        ty: Box::new(Type::Ptr(TypePtr {
-                            const_token: None,
-                            elem: ty.to_owned(),
-                            star_token: Star(Span::call_site()),
-                            mutability: Some(Mut(Span::call_site())),
-                        })),
-                    }));
-                    quote! { *_return =  }
-                }
-                ReturnType::Default => {
-                    quote! {}
-                }
-            };
-            // TODO: Transform args
-            // TODO: seperate out common logic
-            // TODO: Determine if type is FFI safe, and then do things correctly
-            let output = quote! {
-                #[no_mangle]
-                pub unsafe extern fn #raw_c_func(#new_args) {
-                    let raw_path = std::mem::take((*raw_path).as_mut_string());
-                    #output_binding #rust_func(#args);
-                }
+    let item = syn::parse_macro_input!(item as ItemMod);
 
-                #func
-            };
-            output.into()
+    let output = dotnet_internal(item);
+
+    output.into()
+}
+
+pub(crate) fn dotnet_internal(item: ItemMod) -> TokenStream {
+    let (_, content) = item.content.unwrap();
+
+    let mut functions = Vec::new();
+    for item in &content {
+        match item {
+            Item::Struct(s) => {}
+            Item::ForeignMod(f) => {
+                f.items.iter().for_each(|item| match item {
+                    ForeignItem::Fn(f) => create_c_func_from_extern_rust_func(f, &mut functions),
+                    ForeignItem::Type(ty) => {}
+                    _ => {}
+                });
+            }
+            _ => {}
         }
-        _ => unimplemented!(),
     }
+
+    let mod_name = item.ident;
+
+    quote! {
+        mod #mod_name {
+            #(#functions)*
+        }
+    }
+}
+
+fn create_c_func_from_extern_rust_func(f: &ForeignItemFn, functions: &mut Vec<ItemFn>) {
+    let mut cloned_sig = f.sig.clone();
+    let mut fn_args = Punctuated::new();
+    let mut lines = Vec::new();
+
+    let args = arguments(&cloned_sig.inputs, &mut fn_args, &mut lines)
+        .iter()
+        .map(|ident| Expr::Verbatim(ident.to_token_stream()))
+        .collect();
+
+    cloned_sig.inputs = fn_args;
+    cloned_sig.abi = Some(Abi {
+        name: Some(LitStr::new("C", Span::call_site())),
+        extern_token: Extern::default(),
+    });
+    cloned_sig.unsafety = Some(Unsafe::default());
+
+    let call = Stmt::Expr(
+        Expr::Call(ExprCall {
+            attrs: vec![],
+            func: Box::new(Expr::Path(ExprPath {
+                attrs: vec![],
+                path: Path {
+                    leading_colon: None,
+                    segments: Punctuated::from_iter([
+                        PathSegment {
+                            ident: Ident::new("super", Span::call_site()),
+                            arguments: PathArguments::None,
+                        },
+                        PathSegment {
+                            ident: Ident::new(&f.sig.ident.to_string(), Span::call_site()),
+                            arguments: PathArguments::None,
+                        },
+                    ]),
+                },
+                qself: None,
+            })),
+            args,
+            paren_token: Paren::default(),
+        }),
+        None,
+    );
+
+    lines.push(call);
+    let fun = ItemFn {
+        attrs: vec![Attribute {
+            pound_token: Pound::default(),
+            style: AttrStyle::Outer,
+            bracket_token: Bracket::default(),
+            meta: Meta::Path(Path {
+                leading_colon: None,
+                segments: Punctuated::from_iter([PathSegment {
+                    ident: Ident::new("no_mangle", Span::call_site()),
+                    arguments: Default::default(),
+                }]),
+            }),
+        }],
+        vis: Visibility::Inherited,
+        sig: cloned_sig,
+        block: Box::new(Block {
+            brace_token: Brace::default(),
+            stmts: lines,
+        }),
+    };
+
+    functions.push(fun);
 }
 
 fn arguments<'a>(
     inputs: &'a Punctuated<FnArg, Comma>,
     new_inputs: &mut Punctuated<FnArg, Comma>,
-) -> Punctuated<&'a proc_macro2::Ident, Comma> {
+    new_lines: &mut Vec<Stmt>,
+) -> Punctuated<&'a Ident, Comma> {
     let mut args = Punctuated::new();
     for input in inputs {
         let FnArg::Typed(input) = &input else {
@@ -147,9 +142,57 @@ fn arguments<'a>(
                         const_token: None,
                         mutability: Some(Mut(Span::call_site())),
                         elem: Box::new(Type::Verbatim(
-                            TokenStream::from_str("RustString").unwrap(),
+                            TokenStream::from_str("::rust_sharp::RustString").unwrap(),
                         )),
-                    })
+                    });
+                    new_lines.push(Stmt::Local(Local {
+                        attrs: vec![],
+                        pat: Pat::Ident(PatIdent {
+                            attrs: vec![],
+                            ident: Ident::new(&w.ident.to_string(), Span::call_site()),
+                            mutability: None,
+                            by_ref: None,
+                            subpat: None,
+                        }),
+                        let_token: Let::default(),
+                        init: Some(LocalInit {
+                            expr: Box::new(Expr::Call(ExprCall {
+                                attrs: vec![],
+                                paren_token: Paren::default(),
+                                args: Punctuated::from_iter([Expr::Verbatim(
+                                    TokenStream::from_str(&format!(
+                                        "(*{}).as_mut_string()",
+                                        w.ident.to_string()
+                                    ))
+                                    .unwrap(),
+                                )]),
+                                func: Box::new(Expr::Path(ExprPath {
+                                    attrs: vec![],
+                                    path: Path {
+                                        leading_colon: Some(PathSep::default()),
+                                        segments: Punctuated::from_iter([
+                                            PathSegment {
+                                                ident: Ident::new("std", Span::call_site()),
+                                                arguments: PathArguments::None
+                                            },
+                                            PathSegment {
+                                                ident: Ident::new("mem", Span::call_site()),
+                                                arguments: PathArguments::None
+                                            },
+                                            PathSegment {
+                                                ident: Ident::new("take", Span::call_site()),
+                                                arguments: PathArguments::None
+                                            }
+                                        ]),
+                                    },
+                                    qself: None
+                                })),
+                            })),
+                            diverge: None,
+                            eq_token: Default::default(),
+                        }),
+                        semi_token: Semi::default(),
+                    }));
                 }
             }
             _ => {}
@@ -162,57 +205,36 @@ fn arguments<'a>(
     args
 }
 
-fn handle_input_types(t: &PatType, inputs: &mut Punctuated<FnArg, Comma>) -> Option<Stmt> {
-    match t.ty.as_ref() {
-        Type::Path(ty) => {
-            if let Some(path) = ty.path.segments.last() {
-                match &path.ident.to_string()[..] {
-                    "String" => {
-                        let name = t.pat.to_token_stream().to_string();
-                        let arg = FnArg::Typed(PatType {
-                            attrs: vec![],
-                            pat: Box::new(Pat::Verbatim(
-                                TokenStream::from_str(&format!("{name}_ptr")).unwrap(),
-                            )),
-                            ty: Box::new(Type::Ptr(TypePtr {
-                                star_token: Default::default(),
-                                const_token: Some(Default::default()),
-                                mutability: None,
-                                elem: Box::new(Type::Verbatim(
-                                    TokenStream::from_str("u16").unwrap(),
-                                )),
-                            })),
-                            colon_token: Default::default(),
-                        });
-                        let len = FnArg::Typed(PatType {
-                            attrs: vec![],
-                            pat: Box::new(Pat::Verbatim(
-                                TokenStream::from_str(&format!("{name}_len")).unwrap(),
-                            )),
-                            ty: Box::new(Type::Verbatim(TokenStream::from_str("usize").unwrap())),
-                            colon_token: Default::default(),
-                        });
-                        inputs.push(arg);
-                        inputs.push(len);
-                        let line = Stmt::Local(Local {
-                            attrs: vec![],
-                            let_token: Default::default(),
-                            pat: Pat::Verbatim(TokenStream::from_str(&name).unwrap()),
-                            init: Some(LocalInit {
-                                eq_token: Default::default(),
-                                expr: Box::new(Expr::Verbatim(TokenStream::from_str(&format!("String::from_utf16(std::slice::from_raw_parts({name}_ptr, {name}_len))")).unwrap())),
-                                diverge: None,
-                            }),
-                            semi_token: Default::default(),
-                        });
-                        Some(line)
-                    }
-                    _ => None,
-                }
-            } else {
-                None
+mod test {
+    #[test]
+    fn test_dotnet_internal() {
+        use crate::dotnet_internal;
+
+        let parsed = syn::parse_quote! {
+        mod bridge {
+            #[repr(C)]
+            struct RustStruct {
+                vector: Vec<i32>
+            }
+
+            extern "Rust" {
+                type OpaqueType;
+
+                fn function_def() -> i32;
+                fn function_def_with_args(arg: String) -> i32;
             }
         }
-        _ => None,
+    };
+
+        let output = dotnet_internal(parsed);
+
+        let item = syn::parse2(output).unwrap();
+        let file = syn::File {
+            attrs: vec![],
+            items: vec![item],
+            shebang: None,
+        };
+
+        println!("{:#}", prettyplease::unparse(&file))
     }
 }
